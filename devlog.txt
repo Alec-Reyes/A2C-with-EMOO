@@ -1,0 +1,2 @@
+Oct 12: tried out the guave softmax thing (didn't work), fixed binary selection tournament bugs, started making simulated binary crossover
+Oct 14: fixed the exploding gradients error, turns out my optimizer was wrong (used Adam, not SGD), and a random bug that appeared at the end of an episode
