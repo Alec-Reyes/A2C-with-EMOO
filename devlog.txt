@@ -1,2 +1,3 @@
 Oct 12: tried out the guave softmax thing (didn't work), fixed binary selection tournament bugs, started making simulated binary crossover
-Oct 14: fixed the exploding gradients error, turns out my optimizer was wrong (used Adam, not SGD), and a random bug that appeared at the end of an episode
+Oct 14: fixed the exploding gradients error, turns out my optimizer was wrong (used Adam, not SGD), and a random bug that appeared at the end of an episode, also got some progress done on SBX, stole it from PYMOO but it should work. Personal note: I worked from 11-1, 3-4, 9-11 (9/11 !!!!!!!)
+Oct 16: finished the SBX, it's takes a while to perform especially at around the policy section, bc there's 13 million parameters to consider... we could change only a small amount of the policy, but that may defeat the purpose. I'll sleep on it and look for a better solution. Work hours: 8-10
