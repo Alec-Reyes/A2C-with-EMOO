@@ -1,0 +1,251 @@
+from argparse import Action
+from collections import deque
+
+import gymnasium as gym
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from numpy.conftest import dtype
+from torch.distributions import Categorical
+import socket
+import struct
+
+import sys
+
+# hyperparameters
+LEARNING_RATE = 0.001
+ENTROPY_BETA = 0.01
+BATCH_SIZE = 8
+
+REWARD_STEPS = 4
+GAMMA = 0.99
+
+HOST = "127.0.0.1"  # Standard loopback interface address (localhost)
+PORT = 65432  # Port to listen on (non-privileged ports are > 1023)
+
+PATHA = "pongactor.pth"
+PATHC = "pongcritic.pth"
+
+
+
+
+class Actor(nn.Module):
+    def __init__(self, input, actions):
+        super(Actor, self).__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(input, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64))
+
+        self.actor = nn.Sequential(
+            nn.Linear(64, actions),
+            nn.Softmax(dim=0),
+        )
+
+    def forward(self, x):
+        x = self.net(x)
+        return self.actor(x)
+
+
+class Critic(nn.Module):
+    def __init__(self, input):
+        super(Critic, self).__init__()
+
+        self.net = nn.Sequential(
+            nn.Linear(input, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64))
+
+        self.critic = nn.Sequential(
+            nn.Linear(64, 1),
+        )
+
+    def forward(self, x):
+        x = self.net(x)
+        return self.critic(x)
+
+
+
+
+env = gym.make("CartPole-v1", render_mode="human")
+# env = gym.make("CartPole-v1")
+pongActor = Actor(env.observation_space.shape[0], env.action_space.n)
+# pongCritic = Critic(shared = pongActor.net) #shared layers might be wrong
+pongCritic = Critic(env.observation_space.shape[0])
+# optimizers
+Actoroptimizer = optim.Adam(pongActor.parameters(), lr=LEARNING_RATE)
+Criticoptimizer = optim.Adam(pongCritic.parameters(), lr=LEARNING_RATE, eps=1e-3)
+
+done = False
+pongActor.train()
+pongCritic.train()
+term = False
+
+# bind socket
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.bind((HOST, PORT))
+s.listen()
+conn, addr = s.accept()
+
+for i in range(10000):  # episodes
+    data = conn.recv(1024)
+    state = torch.FloatTensor(np.frombuffer(data, dtype="float32"))
+    episode_reward = 0
+    done = False
+
+    # values for doing A2C
+    counter = 0
+    Qval = 0
+    actions_logprob = []
+    rewards = []
+    advantages = []
+    values = []
+    Qvals = []
+
+    print("first loop done")
+
+    while not done:
+        # save state before next step bc turning to float tensor
+        #state = torch.FloatTensor(state)
+
+        # moves
+        action_probs = pongActor(state)
+        action_distribution = Categorical(action_probs)
+        chosen_action = action_distribution.sample()
+        value = pongCritic(state)
+
+        #next_state, reward, done, _, _ = env.step(chosen_action.item())
+        conn.sendall(struct.pack('i', chosen_action.item()))
+        data = conn.recv(1024)
+        data = torch.FloatTensor(np.frombuffer(data, dtype="float32"))
+        done = data[-1].item()
+        reward = data[-2].item()
+        state = data[0:-2]
+
+        # save values
+        actions_logprob.append(action_distribution.log_prob(chosen_action))
+        rewards.append(reward)
+        values.append(value)
+        # get ready for next step
+        counter += 1
+        #state = next_state
+        episode_reward += reward
+        # env.render()
+        # assessment period
+        if counter == REWARD_STEPS or done:
+            if done:
+                term = True
+                conn.sendall(struct.pack('i', 67)) #🤑🤑🤑🤑🤑🤑🤑🤑🤑🤑ok but srsly this is the term signal
+
+
+            n = len(rewards)
+            # reset vars for loss
+            Qval = pongCritic(state)
+            Qval = Qval.detach().numpy()[0]
+            Qvals = np.zeros(n)
+            for t in reversed(range(n)):
+                Qval = rewards[t] + GAMMA * Qval  # going from last to first, but why he did it like this I have no fucking clue
+                Qvals[t] = Qval
+
+                # removing this if causes Qval and Value to explode for some reason
+                if term:
+                    Qval = 0  # -1 makes it MUCH better fsr
+                    Qvals[t] = Qval
+                    term = False
+
+            # difference between values and Qval: value is average value of state,
+            # meaning reward from action * probability of doing that action for every action
+            # qval is just one action-reward pair
+
+            # below is just tensor courtesy because pytorch wants their grads fresh
+            values = torch.cat(values)
+            Qvals = torch.FloatTensor(Qvals)
+            advantages = Qvals - values
+            advantages = torch.FloatTensor(advantages)
+
+            actions_logprob = torch.stack(actions_logprob)
+            actor_loss = (-actions_logprob * advantages.detach()).mean()  # .detach optional?
+
+            advantages = advantages.pow(2).mean()
+            critic_loss = 0.5 * advantages
+            """
+            if episode_reward > 20000:
+                torch.save(pongActor.state_dict(), PATHA)
+                torch.save(pongCritic.state_dict(), PATHC)
+                print("saved model!")
+
+                sys.exit(0)
+
+            """
+
+
+            Actoroptimizer.zero_grad()
+            actor_loss.backward(retain_graph=True)
+
+            Criticoptimizer.zero_grad()
+            critic_loss.backward()
+
+            # print(critic_loss)
+            # print(critic_loss.grad)
+            Actoroptimizer.step()
+            Criticoptimizer.step()
+
+            # print(Qvals)
+            # print(values)
+
+            # memory batching goes here
+
+            # resetting variables after updating model
+
+            counter = 0
+            Qval = 0
+            actions_logprob = []
+            rewards = []
+            advantages = []
+            values = []
+            Qvals = []
+
+            # pass # REMOVE THIS WHEN YOURE DONE
+
+        # think it
+        # next_state = torch.FloatTensor(next_state)
+        # state_value = pongCritic(state)
+        # next_state_value = pongCritic(next_state)
+
+        # I II II I _
+        """
+        # advantage comps, FIX THIS
+        TD = reward + gamma * next_state_value * (1 - done)
+        advantage = TD  - state_value
+
+        critic_loss = F.mse_loss(state_value, TD.detach())
+        #critic_loss = advantage.pow(2).mean()
+
+        # Actor update
+        HELP = action_distribution.log_prob(chosen_action)
+        actor_loss = -HELP * advantage.detach()
+
+
+        Criticoptimizer.zero_grad()
+        critic_loss.backward()
+        Actoroptimizer.zero_grad()
+        actor_loss.backward()
+        Actoroptimizer.step()
+        Criticoptimizer.step()
+
+        state = next_state
+        episode_reward += reward
+        """
+
+    print("episode: " + str(i))
+    print("reward: " + str(episode_reward))
+    print("Actor loss: " + str(actor_loss))
+    print("Critic loss: " + str(critic_loss))
+
+
+
+
+
