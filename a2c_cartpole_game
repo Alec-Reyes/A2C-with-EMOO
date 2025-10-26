@@ -1,0 +1,48 @@
+from argparse import Action
+from collections import deque
+
+import gymnasium as gym
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.distributions import Categorical
+import socket
+import struct
+
+import sys
+
+env = gym.make("CartPole-v1")
+
+
+HOST = "127.0.0.1"  # The server's hostname or IP address
+PORT = 65432  # The port used by the server
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((HOST, PORT))
+
+newdata = 67 # reset signal
+while True:
+    if newdata == 67:
+        state = env.reset()[0]
+
+    else:
+        state, reward, done, _, _ = env.step(newdata)
+        state = np.append(state, [reward, done])
+
+
+    state = state.astype(dtype="float32")
+    senddata = state.tobytes()
+    s.sendall(senddata)
+    senddata = np.frombuffer(senddata, dtype="float32")
+
+
+    newdata = struct.unpack('i',s.recv(1024))[0] # remember: unpack returns tuple
+
+#server: b"T\xa2B\xbd\xa7I'<\xf6\xe4\xc4\xbc\x18X\x8e\xbc"
+#client: b"T\xa2B\xbd\xa7I'<\xf6\xe4\xc4\xbc\x18X\x8e\xbc"
+
+
+    #gotarr.append(struct.unpack('f', newdata)[0])
+    #s.sendall(struct.pack('f', gotarr[-1] + 1))
