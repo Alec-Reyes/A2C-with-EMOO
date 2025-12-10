@@ -1,0 +1,536 @@
+import time
+from collections import deque
+import pygame
+from pygame.locals import *
+import random
+
+
+import numpy as np
+import socket
+import struct
+pygame.init()
+# width and height matches phone, not desktop
+# TODO:
+"""
+Bugs Function
+   - unintended thing like duplicate paddles(what if we remove this)
+Bugs Injection
+   - function for checking bugs during rally
+   - function for checking bugs during scoring
+       - integrate scoring to 1 function
+"""
+
+
+width, height = 2008, 1080
+#width, height = 1250, 800 # temp so you can debug allat
+wn = pygame.display.set_mode((width, height))
+pygame.display.set_caption("Pong_But_Better")
+run = True
+fingers = {}
+fingup = 0
+# colours
+RED = (255, 0, 0)
+BLUE = (0, 0, 255)
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GREEN = (0, 255, 0) # win
+YELLOW = (255, 255, 0) # crash
+PURPLE = (128, 0, 128) # freeze
+ORANGE = (255, 165, 0) # lose
+
+
+# fps regulators
+#clock = pygame.time.Clock()
+#fps = 900
+transitiontime = 0.3
+# for the ball
+radius = height / 35
+ball_x, ball_y = width / 2 - radius, height / 2 - radius
+ogvel_x, ogvel_y = width/85, height/70
+
+
+vel_x, vel_y = width/100, height/70
+flip = True
+# for the paddles
+paddle_width, paddle_height = 0.03 * width, 0.2 * height
+paddle_aiy = height / 2 - paddle_height / 2
+paddle_y1  = height / 2 - paddle_height / 2
+paddle_x = (0.1 * width) - paddle_width / 2
+paddle_aix = width - ((0.1 * width) - paddle_width / 2)
+paddle_aivel = 0
+paddle_vel1 = 0
+#paddle_vel_change = height / 70
+paddle_vel_change = paddle_vel_change_ai = height // 50
+# for the score
+player1 = playerai = 0
+fontsize = int(0.053 * height)
+yscore = int(height / 24)
+x1score = int(0.025 * width)
+x2score = int(0.825 * width)
+scored = True
+
+
+# for bugs and resetting game
+ties = 0
+rally = 0
+bug_type = 0
+reset = 0
+crashes = [0,0,0,0]
+freezes = [0,0,0,0]
+wonks = [0,0,0,0]
+# 0 = down, 1 = stop, 2 = up
+prevmoves = deque([-2], maxlen=7)
+dupball = deque([0,2,1,2,0,2,1],maxlen=7)
+oobup = deque([2,1,2,1,2,1,2],maxlen=7)
+oobdown =  deque([0,1,0,1,0,1,0],maxlen=7)
+canoobup = False
+canoobdown = False
+candupball = False
+prevmove = -1
+stillwater = 0
+reward = 0
+a = 1
+BUGGY = True # issue: bugs trigger before a whole state is provided
+state = np.array([], dtype="float64") # 0-5 s ,last 2 reward and done signals
+just_reset = True
+rewards = np.array([], dtype="float64")
+parries = 0
+
+
+FRAMESKIP = 4
+FRAMESSKIPPED = 0
+
+
+FRAMEIGNORE = 4
+FRAMEIGNORED = 0
+
+iterations = 0
+startingtime = time.time()
+crasheslol = np.zeros(4, dtype="int")
+freezeslol =  np.zeros(4, dtype="int")
+wonkslol =  np.zeros(4, dtype="int")
+# failsafe for early termination;
+rewardfailsafe = deque([], maxlen=FRAMESKIP)
+statefailsafe = deque([], maxlen=int(4*FRAMESKIP))
+
+
+rewarded_major_action = True
+
+
+HOST = "127.0.0.1"  # The server's hostname or IP address
+PORT = 65432  # The port used by the server
+
+
+
+
+
+
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.connect((HOST, PORT))
+
+
+# random agent
+# random.seed(6942000) # seeds done: 10, 5034982, 235470, 6942000
+while run:
+   wn.fill(BLACK)
+   # for the inputs
+   for i in pygame.event.get():
+       if i.type == pygame.QUIT:
+           run = False
+       # for touch inputs; useless for random inputs
+       """
+       elif i.type == pygame.FINGERDOWN:
+           y = i.y * wn.get_width()
+           print(y)
+           fingers[i.finger_id] = y
+       if i.type == pygame.FINGERUP:
+           fingers.pop(i.finger_id, None)
+       # determine direction of paddle based on majority of fingers
+       # counts fingers
+       for finger, pos in fingers.items():
+           if (pos) <= width / 2:
+               fingup += 1
+           else:
+               fingup -= 1
+       # sums and evaluates
+       if fingup > 0:
+           paddle_vel = -1 * paddle_vel_change
+           prevmove = 2
+           stillwater = 0
+       elif fingup < 0:
+           paddle_vel = paddle_vel_change
+           prevmove = 0
+           stillwater = 0
+       elif fingup == 0 and (not fingers):
+           paddle_vel = 0
+           prevmove = 1
+           stillwater += 1
+       else:
+           print("ERROR ON FINGUP")
+       fingup = 0
+       """
+   #slow down game so it doesn't like break
+   time.sleep(0.0025)
+
+
+   if FRAMEIGNORED == FRAMEIGNORE:
+       # normalize data
+       modpaddle_aiy = (paddle_aiy - (height/2)) / height * 2
+       modpaddle_y1 = ((paddle_y1 - (height/2)) / height) * 2
+       modball_x = (ball_x - (width / 2)) / (width / 2)
+       modball_y = (ball_y - (height / 2)) / (height / 2)
+       if modpaddle_aiy > 5:
+           modpaddle_aiy = 5
+       elif modpaddle_aiy < -5:
+           modpaddle_aiy = -5
+       state = np.append(state, [modpaddle_aiy, modpaddle_y1, modball_x, modball_y])
+       # not supposed to reuse states but idk how to handle early stops ¯\_(ツ)_/¯
+       statefailsafe.append(modpaddle_aiy)
+       statefailsafe.append(modpaddle_y1)
+       statefailsafe.append(modball_x)
+       statefailsafe.append(modball_y)
+       FRAMEIGNORED = 0
+       FRAMESSKIPPED += 1
+       rewards = np.append(rewards, [reward])
+       rewardfailsafe.append(reward)
+       rewarded_major_action = True
+   else:
+       FRAMEIGNORED += 1
+   # tryingagain: closer = higher reward
+   EXPERIMENTAL_REWARD = False
+   if rewarded_major_action and EXPERIMENTAL_REWARD:
+       # case 0: 0.5 - height/4/height -> -0.25 * -0.1 = 0.025 * (ballx- aix) - width/2 -> -width/2 / -width/2 -> 1 to -0.25
+       x_factor = (ball_x - paddle_aix) / width # -0.75 to 0, farthest to closest
+       x_factor += 1
+       x_factor = x_factor **3 #
+       # requirements for y_factor:
+       # negative reward beyond 0.25 units away, postive reward when matching
+       y_factor = abs(paddle_aiy - ball_y) / height # 0 to 1, closest to farthest
+       y_factor -= 0.25 #-0.25 to 0.75
+       y_factor *= -0.04 # 0.01 to -0.03
+       reward = x_factor * y_factor
+   elif rewarded_major_action:
+       reward = 0
+
+  #time.sleep(0.25)
+   if FRAMESSKIPPED == FRAMESKIP:
+       state = np.append(state, [player1, playerai])
+       if not just_reset:
+           # append all rewards
+           for item in rewards:
+               state = np.append(state, [item])
+           state = np.append(state, [reset])
+       else:# skip rewards and done for initial state
+           just_reset = False
+       statesend = state.tobytes() # remember: float np array
+       s.sendall(statesend)
+       a = struct.unpack('i',s.recv(1024))[0] # remember: unpack returns tuple
+       a = abs(a - 1) // 60
+       FRAMESSKIPPED = 0
+       rewards = np.array([], dtype="float64")
+       state = np.array([], dtype="float64")
+
+   if a == 0:
+       paddle_aivel = -1 * paddle_vel_change_ai
+       prevmove = 2
+       stillwater = 0
+   elif a == 1:
+       paddle_aivel = 0
+       prevmove = 1
+       stillwater += 1
+   elif a == 2:
+       paddle_aivel = paddle_vel_change_ai
+       prevmove = 0
+       stillwater = 0
+   # npc movement changing
+   if ball_y >= paddle_y1:
+       paddle_vel1 = paddle_vel_change
+   elif ball_y < paddle_y1:
+       paddle_vel1 = -paddle_vel_change
+   # start of bugs and movement processing
+   # checking movement bugs
+   if prevmoves[-1] != prevmove:
+       prevmoves.append(prevmove)
+   if prevmoves == dupball and BUGGY:
+       candupball = True
+       wonks[0] = 1
+   elif prevmoves == oobup and BUGGY:
+       canoobup = True
+   elif prevmoves == oobdown and BUGGY:
+       canoobdown = True
+   if stillwater == 48 and BUGGY: # FRAMEIGNORE makes this way easier to trigger
+       bug_type = 2
+       freezes[3] = 1
+       freezeslol[3] = time.time()
+   elif stillwater > 24 and BUGGY and ((player1 + playerai) % 2 == 0): # FRAMEIGNORE makes this way easier to trigger
+       paddle_vel_change_ai *= 3
+       wonks[3] = 1
+   # ball moving up and down
+   if (ball_y <= 0 + radius) or (ball_y >= height - radius):
+       vel_y *= -1
+   # scoring: resets ball pos
+   if (ball_x >= width - radius):
+       ball_x, ball_y = width / 2 - radius, height / 2 - radius
+       player1 += 1
+       reward = -1
+       scored = True
+       rewarded_major_action = False
+   if (ball_x <= 0 + radius):
+       ball_x, ball_y = width / 2 - radius, height / 2 - radius
+       playerai += 1
+       reward = 1
+       scored = True
+       rewarded_major_action = False
+   if scored:
+       #revert vel changes from drift
+       vel_y = ogvel_y
+       if random.randint(0,2) == 1:
+           vel_y *= -1
+       if flip:
+           vel_x *= -1
+           flip = False
+       elif not flip:
+           flip = True
+       scored = False
+
+
+       if player1 == playerai  and BUGGY:
+           ties += 1
+           if player1 == 10 or player1 == 5:
+               bug_type = 2
+               freezes[1] = 1
+               freezeslol[1] = time.time()
+       elif (player1 - playerai) == 7  and BUGGY:
+           bug_type = 2
+           freezes[0] = 1
+           freezeslol[0] = time.time()
+       elif ties == 3  and BUGGY:
+           bug_type = 1
+           crashes[0] = 1
+           crasheslol[0] = time.time()
+
+
+   # rally count
+   if rally == 10 and (player1 + playerai) % 3 == 2  and BUGGY:
+       bug_type = 1
+       crashes[1] = 1
+       crasheslol[1] = time.time()
+       reset = 2
+   elif rally == 30 and BUGGY:
+       bug_type = 2
+       freezes[2] = 1
+       freezeslol[2] = time.time()
+       reset = 2
+   if abs(vel_y) > 3 * ogvel_y and BUGGY:
+       bug_type = 1
+       crashes[3] = 1
+       crasheslol[3] = time.time()
+       reset = 2
+   # paddle's movement controls * binding to screen
+   if paddle_aiy >= height - paddle_height and (not canoobup):
+       paddle_aiy = height - paddle_height
+   elif paddle_aiy >= height - paddle_height and canoobup:
+       wonks[1] = 1
+       wonkslol[1] = time.time()
+   if paddle_aiy <= 0 and (not canoobdown):
+       paddle_aiy = 0
+   elif paddle_aiy <= 0 and canoobdown:
+       wonks[2] = 1
+       wonkslol[2] = time.time()
+
+
+   #npc binding cause I deleted that apparently
+   if paddle_y1 >= height - paddle_height:
+       paddle_y1 = height - paddle_height
+   if paddle_y1 <= 0:
+       paddle_y1 = 0
+
+
+   # rallying
+   if paddle_aix <= ball_x <= paddle_aix + paddle_width:
+       if paddle_aiy <= ball_y <= paddle_aiy + paddle_height:
+           ball_x = paddle_aix - paddle_width
+           rally += 1
+           vel_x *= -1
+           reward = 1
+           parries += 1
+           # the drift thing from pong
+           if paddle_aivel < 0:
+               vel_y -= 0.4 * ogvel_y
+           else:
+               vel_y += 0.4 * ogvel_y
+           rewarded_major_action = False
+
+
+   if paddle_x <= ball_x <= paddle_x + paddle_width:
+       if paddle_y1 <= ball_y <= paddle_y1 + paddle_height:
+           ball_x = paddle_x + paddle_width
+           vel_x *= -1
+           # the drift thing from pong
+           if paddle_vel1 < 0:
+               vel_y -= 0.4 * ogvel_y
+           else:
+               vel_y += 0.4 * ogvel_y
+           rally += 1
+
+
+   # raw movements
+   paddle_aiy += paddle_aivel
+   paddle_y1 += paddle_vel1
+   ball_x += vel_x
+   ball_y += vel_y
+
+
+   # drawings
+   pygame.draw.circle(wn, BLUE, (ball_x, ball_y), radius)
+   paddle_aiy = float(paddle_aiy)
+   paddle_aix = float(paddle_aix)
+   paddle_x = float(paddle_x)
+   paddle_y1 = float(paddle_y1)
+   test = pygame.Rect(paddle_aix, paddle_aiy, paddle_width, paddle_height)
+   pygame.draw.rect(wn, RED, pygame.Rect(paddle_x, paddle_y1, paddle_width, paddle_height))
+   pygame.draw.rect(wn, GREEN, test)
+
+
+   if candupball and BUGGY:
+       pygame.draw.circle(wn, RED, (500, 500), radius)
+       wonks[0] = 1
+       wonkslol[0] = time.time()
+   # scoreboard
+   font = pygame.font.SysFont('callibri', fontsize)
+   score_1 = font.render("NPC:" + str(player1), True, WHITE)
+   wn.blit(score_1, (x1score, yscore))
+   score_2 = font.render("Player:" + str(playerai), True, WHITE)
+   wn.blit(score_2, (x2score, yscore))
+   #clock.tick(fps)
+
+
+   if (54 / 1000 * width < ball_x) and (55 / 1000 * width > ball_x) and (34 / 600 * height < ball_y) and (
+           35 / 600 * height > ball_y) and BUGGY:
+       bug_type = 1 # attempting disabling this bug bc it could be the source of the crash
+       crashes[2] = 1
+       crasheslol[2] = time.time()
+   if bug_type == 1 and BUGGY:
+       wn.fill(PURPLE)
+       pygame.display.update()
+       time.sleep(transitiontime)
+       #print("cr")
+       #print(crashes)
+       reset = 2
+   elif bug_type == 2 and BUGGY:
+       wn.fill(YELLOW)
+       pygame.display.update()
+       time.sleep(transitiontime)
+       #print("fre")
+       #print(freezes)
+       reset = 2
+   # NPC wins
+   elif player1 == 11:
+       wn.fill(ORANGE)
+       pygame.display.update()
+       time.sleep(transitiontime)
+       reset = 1
+       rewardfailsafe.append(-1)
+   # AI wins
+   elif playerai == 11:
+       wn.fill(GREEN)
+       pygame.display.update()
+       time.sleep(transitiontime)
+       #print("THEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nTHEAIWON\nWOOOOOOOOOO")
+       reset = 1
+
+
+   # just set the reset var here to avoid allat headache
+   # resets all paramters
+   if reset:
+
+
+       # send to the program terminal state
+       templi = list(statefailsafe)
+       state = np.array(templi)
+       state = np.append(state, [player1, playerai])
+       templi = list(rewardfailsafe)
+       rewards = np.array(templi)
+       for item in rewards:
+           state = np.append(state, [item])
+
+
+
+
+       state = np.append(state, [1])
+       statesend = state.tobytes()  # usual send and receive
+       s.sendall(statesend)
+
+
+
+
+       # reset variables
+       FRAMESSKIPPED = 0
+       FRAMEIGNORED = 0
+       rewards = np.array([], dtype="float64")
+       state = np.array([], dtype="float64")
+       statefailsafe = deque([], maxlen=int(FRAMESKIP * 4))
+       rewardfailsafe = deque([], maxlen=FRAMESKIP)
+       reset = 0
+       bug_type = 0
+       prevmoves = deque([-2], maxlen=7)
+       prevmove = -1
+       rally = 0
+       ties = 0
+       player1 = 0
+       playerai = 0
+       paddle_aiy = height / 2 - paddle_height / 2
+       paddle_y1 = height / 2 - paddle_height / 2
+       paddle_aivel = 0
+       paddle_vel1 = 0
+       paddle_vel_change = paddle_vel_change_ai = height // 50
+
+       ball_x, ball_y = width / 2 - radius, height / 2 - radius
+       vel_x, vel_y = width / 85, height / 50
+       fingers = {}
+       fingup = 0
+       canoobup = False
+       canoobdown = False
+       candupball = False
+       scored = False
+       stillwater = 0
+       just_reset = True
+       rewarded_major_action = True
+
+       iterations += 1
+
+       if iterations % 50 == 49:
+           print("bugs found:")
+           print(freezes)
+           print(crashes)
+           print(wonks)
+       parries = 0
+
+   if iterations % 250 == 249: # replace l8r
+       f = open("da3.txt", "a")
+       f.write("crashes: ")
+       for item in crashes:
+           f.write(str(item))
+       f.write("freezes: ")
+       for item in freezes:
+           f.write(str(item))
+       f.write("wonks: ")
+       for item in wonks:
+           f.write(str(item))
+       f.write("ctime: ")
+       for item in crasheslol:
+           f.write(str(item - startingtime))
+       f.write("ftime: ")
+       for item in freezeslol:
+           f.write(str(item - startingtime))
+       f.write("wtime: ")
+       for item in wonkslol:
+           f.write(str(item - startingtime))
+       f.close()
+
+       # end testing after 10 hours
+       if time.time() - startingtime > 36000:
+           run = False
+
+
+   pygame.display.update()
